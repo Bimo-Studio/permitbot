@@ -1425,4 +1425,14 @@ Implementation rules for this checklist:
 - [ ] App check — verify map renders OSM tiles, selected marker, real permit points, and real overlays.
 - [ ] App check — verify side panel displays real Growth Signal values and no buy/rent recommendation.
 
+## Backlog After Initial Pass
+
+These items are intentionally not part of the initial ordered Todo list. Do not implement them until every initial-pass todo is complete and a new plan/todo cycle approves them.
+
+- Optional local `docker-compose.yml` for Postgres/PostGIS, app services, and migration checks so development can happen without consuming Supabase free-tier resources.
+- Local database reset/seed scripts for repeatable demos and CI-style migration validation against a disposable PostGIS instance.
+- Explicit geocoding-result cache documentation and cache behavior for the Austin Addresses search endpoint, even though the first pass does not use public Nominatim autocomplete.
+- Expanded OpenStreetMap attribution and tile-usage documentation, including local-development caveats and production traffic expectations.
+- Richer health diagnostics beyond the initial database-backed health endpoint, such as checking migration version, required table counts, and latest Growth Signal generation time.
+
 Todo list added to plan.md — say 'implement it all' to start.
