@@ -38,22 +38,22 @@ Open reference datasets are allowed for lookup, grouping, map overlays, and addr
 
 ## Architecture
 
-Use a Vercel-friendly architecture with Python only in ingestion and analysis, not in request-time serverless functions.
+Use a Vercel-friendly monorepo architecture with separate healthy subprojects for frontend, backend/API, and data pipeline work. Python stays in ingestion and analysis, not in request-time serverless functions.
 
 ```text
 City of Austin Socrata APIs
         |
         v
-Python ingestion scripts
+apps/data-pipeline Python ingestion/scoring scripts
         |
         v
 Supabase Postgres + PostGIS
         |
         v
-Next.js Route Handlers on Vercel
+apps/backend Next.js Route Handlers on Vercel
         |
         v
-Next.js + Leaflet web UI
+apps/frontend Next.js + Leaflet web UI
 ```
 
 Why this architecture:
@@ -63,6 +63,43 @@ Why this architecture:
 - Request-time spatial work should happen in PostGIS, not in heavy Python serverless bundles.
 - Python can still do the data work: Socrata ingestion, pandas transformations, NumPy-based robust summaries, and later scikit-learn experiments.
 - Keeping ingestion separate from the web app avoids Vercel function duration and bundle constraints.
+
+## Monorepo Structure
+
+Use at least two healthy subprojects under the same repo:
+
+```text
+apps/
+  frontend/
+    Next.js UI, Leaflet map, address search UI, side panel, client-side BDD tests
+  backend/
+    Next.js route handlers, server-only Postgres queries, API contract tests
+  data-pipeline/
+    Python ingestion, transformations, area assignment, Growth Signal computation, TDD tests
+packages/
+  shared/
+    Shared TypeScript types and constants used by frontend and backend
+supabase/
+  migrations/
+    Postgres/PostGIS schema migrations
+docs/
+  plan.md
+  research.md
+  data_sources.md
+  scoring_methodology.md
+  deployment.md
+  open_data_policy.md
+```
+
+Subproject responsibilities:
+
+- `apps/frontend` owns user-facing UI only. It must not connect directly to Supabase.
+- `apps/backend` owns request-time API behavior and server-only database access.
+- `apps/data-pipeline` owns all Python, pandas, NumPy, future scikit-learn, Socrata ingestion, area assignment, and signal computation.
+- `packages/shared` owns shared TypeScript API types so frontend and backend do not drift.
+- `supabase` owns database migrations and SQL artifacts.
+
+Vercel deployment should target two deployable Next.js surfaces: `apps/frontend` for the user-facing app and `apps/backend` for API route handlers. On Vercel free tier, this should be configured as two Vercel projects under the same GitHub repo if needed. The frontend must call the backend through a configured API base URL, and the backend remains the only TypeScript project with direct database access.
 
 ## Provider Defaults
 
@@ -378,11 +415,11 @@ create index growth_signals_area_idx
 
 ## Ingestion Plan
 
-Use Python scripts under `pipeline/`.
+Use Python scripts under `apps/data-pipeline/pipeline/`.
 
 ### Python Dependencies
 
-Use `pyproject.toml` with:
+Use `apps/data-pipeline/pyproject.toml` with:
 
 ```toml
 [project]
@@ -396,6 +433,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=5.0",
+]
 ml = ["scikit-learn>=1.5"]
 ```
 
@@ -481,11 +522,11 @@ on conflict (permit_number) do update set
 
 Ingest address, street, ZIP, census tract, and school boundary data separately:
 
-- `pipeline/ingest_addresses.py`
-- `pipeline/ingest_street_segments.py`
-- `pipeline/ingest_zip_boundaries.py`
-- `pipeline/ingest_census_tracts.py`
-- `pipeline/ingest_school_areas.py`
+- `apps/data-pipeline/pipeline/ingest_addresses.py`
+- `apps/data-pipeline/pipeline/ingest_street_segments.py`
+- `apps/data-pipeline/pipeline/ingest_zip_boundaries.py`
+- `apps/data-pipeline/pipeline/ingest_census_tracts.py`
+- `apps/data-pipeline/pipeline/ingest_school_areas.py`
 
 The Socrata reference ingestors should use the same client and insert geometries with `ST_GeomFromGeoJSON`.
 
@@ -504,7 +545,7 @@ AISD school areas need special handling because the official GIS source may be a
 
 - download official AISD GeoJSON directly if available
 - download official AISD zipped shapefiles and convert during local ingestion
-- store small official GeoJSON boundary files under `data/reference/aisd/` if the file size and license are acceptable
+- store small official GeoJSON boundary files under `apps/data-pipeline/data/reference/aisd/` if the file size and license are acceptable
 
 The selected boundary year must be stored and displayed.
 
@@ -513,7 +554,7 @@ The selected boundary year must be stored and displayed.
 Create a pipeline step:
 
 ```text
-pipeline/assign_areas.py
+apps/data-pipeline/pipeline/assign_areas.py
 ```
 
 ### Street Segment Assignment
@@ -581,7 +622,7 @@ and ST_Contains(s.geom, p.geom);
 Create:
 
 ```text
-pipeline/compute_growth_signals.py
+apps/data-pipeline/pipeline/compute_growth_signals.py
 ```
 
 ### Filters
@@ -671,7 +712,7 @@ Use Next.js App Router route handlers.
 Path:
 
 ```text
-app/api/search/addresses/route.ts
+apps/backend/app/api/search/addresses/route.ts
 ```
 
 Request:
@@ -719,7 +760,7 @@ The API should not fall back to non-Austin geocoders in the first public demo. I
 Path:
 
 ```text
-app/api/properties/summary/route.ts
+apps/backend/app/api/properties/summary/route.ts
 ```
 
 Request:
@@ -782,7 +823,7 @@ Response shape:
 Path:
 
 ```text
-app/api/permits/nearby/route.ts
+apps/backend/app/api/permits/nearby/route.ts
 ```
 
 Use this for map permit dots around the selected address. Limit results aggressively for Vercel and browser performance.
@@ -846,30 +887,36 @@ Filter controls:
 ### Component Structure
 
 ```text
-app/
-  layout.tsx
-  page.tsx
-  globals.css
-  api/
+apps/frontend/
+  app/
+    layout.tsx
+    page.tsx
+    globals.css
+  components/
+    AddressSearch.tsx
+    MapView.tsx
+    SignalPanel.tsx
+    AreaTabs.tsx
+    FilterBar.tsx
+    SignalCard.tsx
+    MetricGrid.tsx
+    ConfidenceNote.tsx
+apps/backend/
+  app/api/
     search/addresses/route.ts
     properties/summary/route.ts
     permits/nearby/route.ts
-components/
-  AddressSearch.tsx
-  MapView.tsx
-  SignalPanel.tsx
-  AreaTabs.tsx
-  FilterBar.tsx
-  SignalCard.tsx
-  MetricGrid.tsx
-  ConfidenceNote.tsx
-lib/
-  db.ts
-  queries/
-    addresses.ts
-    properties.ts
-    permits.ts
-  types.ts
+    health/route.ts
+  lib/
+    db.ts
+    queries/
+      addresses.ts
+      properties.ts
+      permits.ts
+packages/shared/
+  src/
+    types.ts
+    constants.ts
 ```
 
 ### Address Search Component
@@ -888,7 +935,9 @@ export function AddressSearch({ onSelect }: AddressSearchProps) {
     }
 
     const timeoutId = window.setTimeout(async () => {
-      const response = await fetch(`/api/search/addresses?q=${encodeURIComponent(query)}`);
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/search/addresses?q=${encodeURIComponent(query)}`
+      );
       const payload: AddressSearchResponse = await response.json();
       setResults(payload.results);
     }, 250);
@@ -935,14 +984,26 @@ Map responsibilities:
 
 ### Vercel
 
-Use Vercel for the Next.js app. Store these environment variables in Vercel:
+Use Vercel for both Next.js subprojects:
+
+- `apps/frontend` deploys as the public web app.
+- `apps/backend` deploys as the API service.
+
+Store these environment variables in the frontend Vercel project:
+
+```text
+NEXT_PUBLIC_APP_ENV
+NEXT_PUBLIC_API_BASE_URL
+```
+
+Store these environment variables in the backend Vercel project:
 
 ```text
 DATABASE_URL
-NEXT_PUBLIC_APP_ENV
+APP_ENV
 ```
 
-Use a pooled Supabase connection string for Vercel request handlers if available. Keep any service-role or direct database credentials server-only.
+Use a pooled Supabase connection string for backend Vercel request handlers if available. Keep any service-role or direct database credentials server-only and never expose them to `apps/frontend`.
 
 ### GitHub Actions
 
@@ -975,6 +1036,13 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run test:coverage
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e "apps/data-pipeline[dev]"
+      - run: pytest apps/data-pipeline --cov=apps/data-pipeline/pipeline --cov-fail-under=50
+      - run: npm run test:bdd
       - run: npm run build
 ```
 
@@ -989,8 +1057,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  deploy-frontend:
     runs-on: ubuntu-latest
+    env:
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_FRONTEND_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -999,8 +1069,29 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: apps/frontend
       - run: npx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: apps/frontend
       - run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: apps/frontend
+
+  deploy-backend:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_BACKEND_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: apps/backend
+      - run: npx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: apps/backend
+      - run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: apps/backend
 ```
 
 Required GitHub secrets:
@@ -1008,7 +1099,8 @@ Required GitHub secrets:
 ```text
 VERCEL_TOKEN
 VERCEL_ORG_ID
-VERCEL_PROJECT_ID
+VERCEL_FRONTEND_PROJECT_ID
+VERCEL_BACKEND_PROJECT_ID
 ```
 
 ### Database Migrations
@@ -1055,43 +1147,52 @@ These are the files expected to be created or modified during implementation.
 - `README.md` - update from placeholder to setup, data, deployment, and caveats.
 - `.gitignore` - add local env files, build output, Python caches, Vercel files.
 - `.env.example` - document required local variables.
-- `package.json` - Next.js scripts and JS dependencies.
+- `package.json` - npm workspace scripts and root JS tooling.
 - `package-lock.json` - lock JS dependencies.
-- `tsconfig.json` - TypeScript config.
-- `next.config.ts` - Next.js config.
-- `eslint.config.mjs` - lint config.
+- `tsconfig.base.json` - shared strict TypeScript base config.
+- `eslint.config.mjs` - root lint config shared by workspaces.
 - `postcss.config.mjs` - if CSS tooling requires it.
-- `pyproject.toml` - Python pipeline dependencies and tool config.
-- `plan.md` - implementation progress source of truth later.
+- `pyproject.toml` - optional root Python tooling config if needed; pipeline-specific Python config should live in `apps/data-pipeline`.
 
-### App
+### Frontend App
 
-- `app/layout.tsx` - root layout and metadata.
-- `app/page.tsx` - main page shell.
-- `app/globals.css` - laptop-first layout and visual styling.
-- `app/api/search/addresses/route.ts` - address search endpoint.
-- `app/api/properties/summary/route.ts` - selected property summary endpoint.
-- `app/api/permits/nearby/route.ts` - nearby permit point endpoint.
+- `apps/frontend/package.json` - frontend scripts and dependencies.
+- `apps/frontend/next.config.ts` - frontend Next.js config.
+- `apps/frontend/tsconfig.json` - frontend TypeScript config extending the root base config.
+- `apps/frontend/app/layout.tsx` - root layout and metadata.
+- `apps/frontend/app/page.tsx` - main page shell.
+- `apps/frontend/app/globals.css` - laptop-first layout and visual styling.
 
-### Components
+### Frontend Components
 
-- `components/AddressSearch.tsx` - top address search bar.
-- `components/MapView.tsx` - Leaflet map and overlays.
-- `components/SignalPanel.tsx` - right-side panel.
-- `components/AreaTabs.tsx` - street/ZIP/tract/school tabs.
-- `components/FilterBar.tsx` - permit filter controls.
-- `components/SignalCard.tsx` - growth signal display.
-- `components/MetricGrid.tsx` - raw metric display.
-- `components/ConfidenceNote.tsx` - confidence and caveat display.
+- `apps/frontend/components/AddressSearch.tsx` - top address search bar.
+- `apps/frontend/components/MapView.tsx` - Leaflet map and overlays.
+- `apps/frontend/components/SignalPanel.tsx` - right-side panel.
+- `apps/frontend/components/AreaTabs.tsx` - street/ZIP/tract/school tabs.
+- `apps/frontend/components/FilterBar.tsx` - permit filter controls.
+- `apps/frontend/components/SignalCard.tsx` - growth signal display.
+- `apps/frontend/components/MetricGrid.tsx` - raw metric display.
+- `apps/frontend/components/ConfidenceNote.tsx` - confidence and caveat display.
 
-### Library
+### Backend App
 
-- `lib/db.ts` - server-only Postgres client.
-- `lib/types.ts` - shared TypeScript types.
-- `lib/queries/addresses.ts` - address SQL.
-- `lib/queries/properties.ts` - area and signal SQL.
-- `lib/queries/permits.ts` - nearby permit SQL.
-- `lib/format.ts` - formatting helpers.
+- `apps/backend/package.json` - backend scripts and dependencies.
+- `apps/backend/next.config.ts` - backend/API Next.js config.
+- `apps/backend/app/api/search/addresses/route.ts` - address search endpoint.
+- `apps/backend/app/api/properties/summary/route.ts` - selected property summary endpoint.
+- `apps/backend/app/api/permits/nearby/route.ts` - nearby permit point endpoint.
+- `apps/backend/app/api/health/route.ts` - database-backed health check endpoint.
+- `apps/backend/lib/db.ts` - server-only Postgres client.
+- `apps/backend/lib/queries/addresses.ts` - address SQL.
+- `apps/backend/lib/queries/properties.ts` - area and signal SQL.
+- `apps/backend/lib/queries/permits.ts` - nearby permit SQL.
+- `apps/backend/lib/geojson.ts` - GeoJSON conversion/parsing helpers.
+
+### Shared Package
+
+- `packages/shared/package.json` - shared package scripts and metadata.
+- `packages/shared/src/types.ts` - shared API and UI TypeScript types.
+- `packages/shared/src/constants.ts` - shared area/filter constants.
 
 ### Supabase / SQL
 
@@ -1102,26 +1203,27 @@ These are the files expected to be created or modified during implementation.
 - `supabase/migrations/0004_analytics_tables.sql`
 - `supabase/migrations/0005_views.sql`
 
-### Python Pipeline
+### Data Pipeline App
 
-- `pipeline/__init__.py`
-- `pipeline/config.py`
-- `pipeline/db.py`
-- `pipeline/socrata.py`
-- `pipeline/ingest_permits.py`
-- `pipeline/ingest_addresses.py`
-- `pipeline/ingest_street_segments.py`
-- `pipeline/ingest_zip_boundaries.py`
-- `pipeline/ingest_census_tracts.py`
-- `pipeline/ingest_school_areas.py`
-- `pipeline/assign_areas.py`
-- `pipeline/compute_growth_signals.py`
-- `pipeline/run_all.py`
+- `apps/data-pipeline/pyproject.toml`
+- `apps/data-pipeline/pipeline/__init__.py`
+- `apps/data-pipeline/pipeline/config.py`
+- `apps/data-pipeline/pipeline/db.py`
+- `apps/data-pipeline/pipeline/socrata.py`
+- `apps/data-pipeline/pipeline/ingest_permits.py`
+- `apps/data-pipeline/pipeline/ingest_addresses.py`
+- `apps/data-pipeline/pipeline/ingest_street_segments.py`
+- `apps/data-pipeline/pipeline/ingest_zip_boundaries.py`
+- `apps/data-pipeline/pipeline/ingest_census_tracts.py`
+- `apps/data-pipeline/pipeline/ingest_school_areas.py`
+- `apps/data-pipeline/pipeline/assign_areas.py`
+- `apps/data-pipeline/pipeline/compute_growth_signals.py`
+- `apps/data-pipeline/pipeline/run_all.py`
 
 ### Data References
 
-- `data/reference/aisd/README.md` - document AISD boundary source and school year.
-- `data/reference/aisd/.gitkeep` - placeholder unless small GeoJSON files are committed.
+- `apps/data-pipeline/data/reference/aisd/README.md` - document AISD boundary source and school year.
+- `apps/data-pipeline/data/reference/aisd/.gitkeep` - placeholder unless small GeoJSON files are committed.
 
 ### GitHub Actions
 
@@ -1136,7 +1238,7 @@ These are the files expected to be created or modified during implementation.
 - `docs/deployment.md` - Vercel, Supabase, GitHub secrets, free-tier notes.
 - `docs/open_data_policy.md` - open-data-only rule and excluded data types.
 
-The existing `docs/plan.md` should be replaced with this current plan during the planning update. Older planning context can be recovered from git history.
+`docs/plan.md` is the canonical plan. Older planning context can be recovered from git history.
 
 ## Testing and Validation Plan
 
@@ -1265,27 +1367,31 @@ Implementation rules for this checklist:
 - CI must pass all tests before implementation is considered complete.
 - Code coverage must be at least 50% for both TypeScript and Python test suites and must not decrease once a higher threshold is established.
 - If a task is blocked, write the blocker to `blockers.md`, leave the todo unchecked, and continue only if the next item does not depend on the blocker.
-- After completing each checked item, update this checklist in `plan.md` and `docs/plan.md`.
+- After completing each checked item, update this checklist in `docs/plan.md`.
 
 ### Phase 1: Project Scaffold
 
-- [ ] `package.json` — create Next.js app scripts and dependencies for the Vercel-hosted web app.
+- [ ] `package.json` — create npm workspace scripts for `apps/frontend`, `apps/backend`, and `packages/shared`.
 - [ ] `package-lock.json` — lock JavaScript dependencies after installing the app dependencies.
-- [ ] `tsconfig.json` — configure strict TypeScript for the app and route handlers.
-- [ ] `next.config.ts` — add minimal Next.js configuration required for the app.
+- [ ] `tsconfig.base.json` — configure strict shared TypeScript settings for all TypeScript workspaces.
 - [ ] `eslint.config.mjs` — add lint configuration compatible with the chosen Next.js version.
-- [ ] `app/layout.tsx` — create the root layout and metadata for Permitbot.
-- [ ] `app/page.tsx` — create the main page shell with address search, map, and side panel regions.
-- [ ] `app/globals.css` — create the laptop-first base layout and visual styling.
-- [ ] `components/.gitkeep` — create the components directory before adding component files.
-- [ ] `lib/.gitkeep` — create the library directory before adding shared app code.
-- [ ] `pyproject.toml` — define Python pipeline dependencies and optional ML dependencies.
-- [ ] `pyproject.toml` — configure pytest and coverage settings with a minimum 50% Python coverage threshold.
-- [ ] `vitest.config.ts` — configure TypeScript unit/component tests and minimum 50% coverage threshold.
-- [ ] `playwright.config.ts` — configure BDD-style acceptance tests for plan adherence.
-- [ ] `pipeline/__init__.py` — create the Python pipeline package.
-- [ ] `tests/bdd/.gitkeep` — create the acceptance-test directory for plan-level BDD scenarios.
-- [ ] `tests/unit/.gitkeep` — create the TypeScript unit-test directory for TDD tests.
+- [ ] `apps/frontend/package.json` — create frontend Next.js scripts and dependencies for the Vercel-hosted UI.
+- [ ] `apps/frontend/tsconfig.json` — configure strict frontend TypeScript extending the root base config.
+- [ ] `apps/frontend/next.config.ts` — add minimal frontend Next.js configuration.
+- [ ] `apps/frontend/app/layout.tsx` — create the frontend root layout and metadata for Permitbot.
+- [ ] `apps/frontend/app/page.tsx` — create the frontend page shell with address search, map, and side panel regions.
+- [ ] `apps/frontend/app/globals.css` — create the laptop-first frontend base layout and visual styling.
+- [ ] `apps/frontend/components/.gitkeep` — create the frontend components directory before adding component files.
+- [ ] `apps/backend/package.json` — create backend/API scripts and dependencies.
+- [ ] `apps/backend/tsconfig.json` — configure strict backend TypeScript extending the root base config.
+- [ ] `apps/backend/lib/.gitkeep` — create the backend library directory before adding server-only code.
+- [ ] `packages/shared/package.json` — create shared TypeScript package metadata.
+- [ ] `packages/shared/src/.gitkeep` — create shared source directory for cross-project types/constants.
+- [ ] `apps/data-pipeline/pyproject.toml` — define Python pipeline dependencies, optional ML dependencies, pytest, and 50% coverage settings.
+- [ ] `apps/data-pipeline/pipeline/__init__.py` — create the Python pipeline package.
+- [ ] `apps/data-pipeline/pipeline/tests/.gitkeep` — create the Python TDD test directory.
+- [ ] `tests/bdd/.gitkeep` — create the repo-level acceptance-test directory for plan-level BDD scenarios.
+- [ ] `tests/unit/.gitkeep` — create the repo-level TypeScript unit-test directory for cross-project TDD tests.
 - [ ] `.env.example` — document required Supabase, database, and deployment environment variables.
 - [ ] `.gitignore` — add local env files, build output, Python caches, Supabase temp files, and Vercel files.
 
@@ -1301,90 +1407,90 @@ Implementation rules for this checklist:
 
 ### Phase 3: Python Pipeline Foundation
 
-- [ ] `pipeline/config.py` — load and validate environment variables with no implicit production defaults.
-- [ ] `pipeline/db.py` — implement a psycopg connection helper and transaction wrapper.
-- [ ] `pipeline/socrata.py` — implement paginated Socrata API fetching with timeout and error handling.
-- [ ] `pipeline/geometry.py` — add GeoJSON serialization helpers for PostGIS inserts.
-- [ ] `pipeline/work_classes.py` — implement real permit work-class normalization.
-- [ ] `pipeline/tests/test_work_classes.py` — test work-class normalization with real expected categories.
+- [ ] `apps/data-pipeline/pipeline/config.py` — load and validate environment variables with no implicit production defaults.
+- [ ] `apps/data-pipeline/pipeline/db.py` — implement a psycopg connection helper and transaction wrapper.
+- [ ] `apps/data-pipeline/pipeline/socrata.py` — implement paginated Socrata API fetching with timeout and error handling.
+- [ ] `apps/data-pipeline/pipeline/geometry.py` — add GeoJSON serialization helpers for PostGIS inserts.
+- [ ] `apps/data-pipeline/pipeline/work_classes.py` — implement real permit work-class normalization.
+- [ ] `apps/data-pipeline/pipeline/tests/test_work_classes.py` — test work-class normalization with real expected categories.
 - [ ] `tests/bdd/pipeline-readiness.spec.ts` — add a BDD acceptance check that the pipeline commands and required environment variables match the plan.
 
 ### Phase 4: Reference Data Ingestion
 
-- [ ] `pipeline/ingest_addresses.py` — ingest Austin Addresses from `9s7j-tygf` into `core.addresses`.
-- [ ] `pipeline/ingest_street_segments.py` — ingest Street Centerline from `8hf2-pdmb` into `geo.street_segments`.
-- [ ] `pipeline/ingest_zip_boundaries.py` — ingest Austin ZIP polygons from `24mx-z6v2` into `geo.zip_boundaries`.
-- [ ] `pipeline/ingest_census_tracts.py` — ingest Travis County census tracts from `bh9b-sg93` into `geo.census_tracts`.
-- [ ] `data/reference/aisd/README.md` — document the exact AISD attendance boundary source and required school-year labeling.
-- [ ] `pipeline/ingest_school_areas.py` — ingest ES/MS/HS AISD school areas from the documented open source into `geo.school_areas`.
-- [ ] `pipeline/run_reference_ingest.py` — run all reference ingestion steps in dependency order.
+- [ ] `apps/data-pipeline/pipeline/ingest_addresses.py` — ingest Austin Addresses from `9s7j-tygf` into `core.addresses`.
+- [ ] `apps/data-pipeline/pipeline/ingest_street_segments.py` — ingest Street Centerline from `8hf2-pdmb` into `geo.street_segments`.
+- [ ] `apps/data-pipeline/pipeline/ingest_zip_boundaries.py` — ingest Austin ZIP polygons from `24mx-z6v2` into `geo.zip_boundaries`.
+- [ ] `apps/data-pipeline/pipeline/ingest_census_tracts.py` — ingest Travis County census tracts from `bh9b-sg93` into `geo.census_tracts`.
+- [ ] `apps/data-pipeline/data/reference/aisd/README.md` — document the exact AISD attendance boundary source and required school-year labeling.
+- [ ] `apps/data-pipeline/pipeline/ingest_school_areas.py` — ingest ES/MS/HS AISD school areas from the documented open source into `geo.school_areas`.
+- [ ] `apps/data-pipeline/pipeline/run_reference_ingest.py` — run all reference ingestion steps in dependency order.
 
 ### Phase 5: Permit Ingestion
 
-- [ ] `pipeline/ingest_permits.py` — ingest only `BP` permits from 2015-present with non-null issue date and coordinates.
-- [ ] `pipeline/ingest_permits.py` — upsert normalized permit fields into `core.permits` without storing full raw JSON payloads.
-- [ ] `pipeline/ingest_permits.py` — write ingestion run status and row counts to `ingest.runs`.
-- [ ] `pipeline/tests/test_permit_transform.py` — test permit row transformation using real-shaped sample rows.
+- [ ] `apps/data-pipeline/pipeline/ingest_permits.py` — ingest only `BP` permits from 2015-present with non-null issue date and coordinates.
+- [ ] `apps/data-pipeline/pipeline/ingest_permits.py` — upsert normalized permit fields into `core.permits` without storing full raw JSON payloads.
+- [ ] `apps/data-pipeline/pipeline/ingest_permits.py` — write ingestion run status and row counts to `ingest.runs`.
+- [ ] `apps/data-pipeline/pipeline/tests/test_permit_transform.py` — test permit row transformation using real-shaped sample rows.
 - [ ] `tests/bdd/permit-ingestion.spec.ts` — add a BDD acceptance check that permit ingestion targets only real `BP` permits from 2015-present and rejects out-of-scope rows.
 
 ### Phase 6: Area Assignment
 
-- [ ] `pipeline/assign_street_segments.py` — assign permits to nearest street segment within the configured distance threshold.
-- [ ] `pipeline/assign_zipcodes.py` — assign permits to ZIP polygons and use permit ZIP only as documented fallback.
-- [ ] `pipeline/assign_census_tracts.py` — assign permits to census tracts by polygon containment.
-- [ ] `pipeline/assign_school_areas.py` — assign permits to ES/MS/HS school areas by polygon containment and active school year.
-- [ ] `pipeline/assign_areas.py` — run all assignment steps in order and record assignment confidence.
-- [ ] `pipeline/tests/test_area_assignment_sql.py` — test generated assignment SQL fragments or query builders for street, ZIP, tract, and school assignment behavior.
+- [ ] `apps/data-pipeline/pipeline/assign_street_segments.py` — assign permits to nearest street segment within the configured distance threshold.
+- [ ] `apps/data-pipeline/pipeline/assign_zipcodes.py` — assign permits to ZIP polygons and use permit ZIP only as documented fallback.
+- [ ] `apps/data-pipeline/pipeline/assign_census_tracts.py` — assign permits to census tracts by polygon containment.
+- [ ] `apps/data-pipeline/pipeline/assign_school_areas.py` — assign permits to ES/MS/HS school areas by polygon containment and active school year.
+- [ ] `apps/data-pipeline/pipeline/assign_areas.py` — run all assignment steps in order and record assignment confidence.
+- [ ] `apps/data-pipeline/pipeline/tests/test_area_assignment_sql.py` — test generated assignment SQL fragments or query builders for street, ZIP, tract, and school assignment behavior.
 - [ ] `tests/bdd/area-assignment.spec.ts` — add a BDD acceptance check that the plan-required geographies are represented: street segment, ZIP, census tract, ES, MS, and HS.
 
 ### Phase 7: Growth Signal Computation
 
-- [ ] `pipeline/scoring.py` — implement deterministic Growth Signal scoring, direction labels, and confidence calculations.
-- [ ] `pipeline/tests/test_scoring.py` — test scoring thresholds, confidence behavior, and insufficient-data cases.
-- [ ] `pipeline/compute_growth_signals.py` — compute area/filter metrics for street segments, ZIPs, census tracts, ES areas, MS areas, and HS areas.
-- [ ] `pipeline/compute_growth_signals.py` — write real precomputed rows to `analytics.growth_signals`.
-- [ ] `pipeline/run_all.py` — run reference ingestion, permit ingestion, area assignment, and signal computation in order.
+- [ ] `apps/data-pipeline/pipeline/scoring.py` — implement deterministic Growth Signal scoring, direction labels, and confidence calculations.
+- [ ] `apps/data-pipeline/pipeline/tests/test_scoring.py` — test scoring thresholds, confidence behavior, and insufficient-data cases.
+- [ ] `apps/data-pipeline/pipeline/compute_growth_signals.py` — compute area/filter metrics for street segments, ZIPs, census tracts, ES areas, MS areas, and HS areas.
+- [ ] `apps/data-pipeline/pipeline/compute_growth_signals.py` — write real precomputed rows to `analytics.growth_signals`.
+- [ ] `apps/data-pipeline/pipeline/run_all.py` — run reference ingestion, permit ingestion, area assignment, and signal computation in order.
 - [ ] `tests/bdd/growth-signal.spec.ts` — add a BDD acceptance check that Growth Signal output is permit-only, includes confidence, and never contains buy/rent recommendations.
 
 ### Phase 8: Server-Side App Data Access
 
-- [ ] `lib/types.ts` — define TypeScript types for address candidates, property summaries, areas, signals, metrics, drivers, and overlays.
-- [ ] `lib/db.ts` — implement server-only Postgres access using `DATABASE_URL`.
-- [ ] `lib/queries/addresses.ts` — implement Austin-only address search using `core.addresses` trigram search.
-- [ ] `lib/queries/properties.ts` — implement property area lookup and signal lookup from real database tables.
-- [ ] `lib/queries/permits.ts` — implement nearby permit query from `core.permits`.
-- [ ] `lib/geojson.ts` — implement GeoJSON conversion/parsing helpers for API responses.
+- [ ] `packages/shared/src/types.ts` — define TypeScript types for address candidates, property summaries, areas, signals, metrics, drivers, and overlays.
+- [ ] `apps/backend/lib/db.ts` — implement server-only Postgres access using `DATABASE_URL`.
+- [ ] `apps/backend/lib/queries/addresses.ts` — implement Austin-only address search using `core.addresses` trigram search.
+- [ ] `apps/backend/lib/queries/properties.ts` — implement property area lookup and signal lookup from real database tables.
+- [ ] `apps/backend/lib/queries/permits.ts` — implement nearby permit query from `core.permits`.
+- [ ] `apps/backend/lib/geojson.ts` — implement GeoJSON conversion/parsing helpers for API responses.
 - [ ] `tests/unit/api-query-contracts.test.ts` — test query helper behavior for Austin-only search, property summary, permit lookup, and GeoJSON conversion.
 
 ### Phase 9: API Routes
 
-- [ ] `app/api/search/addresses/route.ts` — return only Austin address candidates from the local open-data address table.
-- [ ] `app/api/properties/summary/route.ts` — return selected address, assigned areas, Growth Signals, and overlays from real database records.
-- [ ] `app/api/permits/nearby/route.ts` — return bounded nearby permit points from real permit records.
-- [ ] `app/api/health/route.ts` — expose a simple database-backed health check for deployment validation.
+- [ ] `apps/backend/app/api/search/addresses/route.ts` — return only Austin address candidates from the local open-data address table.
+- [ ] `apps/backend/app/api/properties/summary/route.ts` — return selected address, assigned areas, Growth Signals, and overlays from real database records.
+- [ ] `apps/backend/app/api/permits/nearby/route.ts` — return bounded nearby permit points from real permit records.
+- [ ] `apps/backend/app/api/health/route.ts` — expose a simple database-backed health check for deployment validation.
 - [ ] `tests/unit/api-routes.test.ts` — test route validation, missing-query behavior, empty-result behavior, and response shape without mocked business outcomes.
 - [ ] `tests/bdd/api-contract.spec.ts` — add a BDD acceptance check that API responses expose only plan-approved data and real database-backed fields.
 
 ### Phase 10: UI Components
 
-- [ ] `components/AddressSearch.tsx` — implement the required top address search bar with keyboard-accessible Austin-only results.
-- [ ] `components/MapView.tsx` — implement Leaflet map with OSM attribution, selected marker, permit points, and real overlays.
-- [ ] `components/SignalPanel.tsx` — implement the right-side panel using real property summary data.
-- [ ] `components/AreaTabs.tsx` — implement Street Segment, ZIP, Census Tract, and Schools tabs.
-- [ ] `components/FilterBar.tsx` — implement filter controls backed by available precomputed signal filter keys.
-- [ ] `components/SignalCard.tsx` — display Growth Signal, direction, confidence, and drivers.
-- [ ] `components/MetricGrid.tsx` — display raw permit metrics from API responses.
-- [ ] `components/ConfidenceNote.tsx` — display low-confidence and permit-only caveats.
+- [ ] `apps/frontend/components/AddressSearch.tsx` — implement the required top address search bar with keyboard-accessible Austin-only results.
+- [ ] `apps/frontend/components/MapView.tsx` — implement Leaflet map with OSM attribution, selected marker, permit points, and real overlays.
+- [ ] `apps/frontend/components/SignalPanel.tsx` — implement the right-side panel using real property summary data.
+- [ ] `apps/frontend/components/AreaTabs.tsx` — implement Street Segment, ZIP, Census Tract, and Schools tabs.
+- [ ] `apps/frontend/components/FilterBar.tsx` — implement filter controls backed by available precomputed signal filter keys.
+- [ ] `apps/frontend/components/SignalCard.tsx` — display Growth Signal, direction, confidence, and drivers.
+- [ ] `apps/frontend/components/MetricGrid.tsx` — display raw permit metrics from API responses.
+- [ ] `apps/frontend/components/ConfidenceNote.tsx` — display low-confidence and permit-only caveats.
 - [ ] `tests/unit/components.test.tsx` — test component rendering for search, area tabs, filters, signal cards, metrics, and confidence notes.
 - [ ] `tests/bdd/ui-plan.spec.ts` — add a BDD acceptance check for the required laptop layout, top address search bar, map, side panel, area tabs, ES/MS/HS labels, and no buy/rent recommendation.
 
 ### Phase 11: Page Integration
 
-- [ ] `app/page.tsx` — wire address selection to property summary fetching.
-- [ ] `app/page.tsx` — wire selected property to map center, overlays, and nearby permit loading.
-- [ ] `app/page.tsx` — wire area tab and filter selection to the side panel.
-- [ ] `app/page.tsx` — handle no Austin address match, loading, empty-signal, and API error states.
-- [ ] `app/globals.css` — polish the laptop-first map/sidebar layout without adding mobile-specific scope.
+- [ ] `apps/frontend/app/page.tsx` — wire address selection to property summary fetching.
+- [ ] `apps/frontend/app/page.tsx` — wire selected property to map center, overlays, and nearby permit loading.
+- [ ] `apps/frontend/app/page.tsx` — wire area tab and filter selection to the side panel.
+- [ ] `apps/frontend/app/page.tsx` — handle no Austin address match, loading, empty-signal, and API error states.
+- [ ] `apps/frontend/app/globals.css` — polish the laptop-first map/sidebar layout without adding mobile-specific scope.
 - [ ] `tests/bdd/end-to-end-demo.spec.ts` — add a BDD acceptance check that a real Austin address search can drive the map and side panel using database-backed API responses.
 
 ### Phase 12: Documentation
@@ -1394,7 +1500,7 @@ Implementation rules for this checklist:
 - [ ] `docs/scoring_methodology.md` — document Growth Signal formulas, filters, confidence, and limitations.
 - [ ] `docs/deployment.md` — document Vercel, Supabase, GitHub secrets, migrations, and free-tier constraints.
 - [ ] `docs/open_data_policy.md` — document the open-data-only rule and excluded paid/private data sources.
-- [ ] `docs/plan.md` — keep this file synchronized with root `plan.md`.
+- [ ] `docs/plan.md` — keep this canonical plan updated as implementation progresses.
 
 ### Phase 13: GitHub Actions and Deployment
 
@@ -1402,7 +1508,7 @@ Implementation rules for this checklist:
 - [ ] `.github/workflows/ci.yml` — enforce TypeScript and Python coverage at 50% minimum and fail if tests fail.
 - [ ] `.github/workflows/vercel-deploy.yml` — add production Vercel deployment using GitHub secrets and Vercel CLI.
 - [ ] `.github/workflows/ingest.yml` — add a manual-only ingestion workflow that never runs on every push.
-- [ ] `docs/deployment.md` — document required GitHub secrets: `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and `DATABASE_URL`.
+- [ ] `docs/deployment.md` — document required GitHub secrets: `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_FRONTEND_PROJECT_ID`, `VERCEL_BACKEND_PROJECT_ID`, and `DATABASE_URL`.
 
 ### Phase 14: Verification
 
@@ -1435,4 +1541,4 @@ These items are intentionally not part of the initial ordered Todo list. Do not 
 - Expanded OpenStreetMap attribution and tile-usage documentation, including local-development caveats and production traffic expectations.
 - Richer health diagnostics beyond the initial database-backed health endpoint, such as checking migration version, required table counts, and latest Growth Signal generation time.
 
-Todo list added to plan.md — say 'implement it all' to start.
+Todo list added to docs/plan.md — say 'implement it all' to start.
